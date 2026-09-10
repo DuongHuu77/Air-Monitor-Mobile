@@ -47,7 +47,7 @@ static const char* WIFI_PASS = "Tu1den9@";
 
 // Điền đúng Project URL và ANON_KEY lấy từ Supabase
 static const char* SUPABASE_URL = "https://uorxskikmtfimndjribo.supabase.co/rest/v1/rpc/submit_reading";
-static const char* SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVvcnhza2lrbXRmaW1uZGpyaWJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg2NzU2MDEsImV4cCI6MjEwNDI1MTYwMX0.JDLgN0GubxDd2C_gWSqrDVdb04pSKq04pz3Cy42pvl4";
+static const char* SUPABASE_ANON_KEY = "ANON_KEY";
 
 // Mã thiết bị phải khớp 100% với mã đã tạo trong bảng `devices` trên Supabase
 static const char* DEVICE_CODE = "ESP32-AQ-001";
