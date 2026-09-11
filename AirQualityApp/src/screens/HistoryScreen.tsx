@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Platform,
   ScrollView,
@@ -8,7 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { getHistorySeries, getMyDevices } from '../services/api';
+import { getHistorySeries, getMyDevices, subscribeToDeviceReadings } from '../services/api';
 import { Screen } from '../components/Screen';
 import { HistoryChart } from '../components/HistoryChart';
 import { StatCard } from '../components/StatCard';
@@ -45,28 +46,44 @@ export function HistoryScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    getMyDevices()
-      .then(devices => setDevice(devices[0] ?? null))
-      .catch(err => setError(err?.message ?? 'Không thể tải thiết bị.'));
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      getMyDevices()
+        .then(devices => setDevice(devices[0] ?? null))
+        .catch(err => setError(err?.message ?? 'Không thể tải thiết bị.'));
+    }, []),
+  );
 
-  useEffect(() => {
+  const loadSeries = useCallback(() => {
     if (!device) {
       setLoading(false);
       return;
     }
+    setError(null);
+    return getHistorySeries(device.id, metricKey, rangeKey, { start: customStart, end: customEnd })
+      .then(data => setSeries(data))
+      .catch(err => setError(err?.message ?? 'Không thể tải dữ liệu.'));
+  }, [device, metricKey, rangeKey, customStart, customEnd]);
+
+  useEffect(() => {
     let active = true;
     setLoading(true);
-    setError(null);
-    getHistorySeries(device.id, metricKey, rangeKey, { start: customStart, end: customEnd })
-      .then(data => active && setSeries(data))
-      .catch(err => active && setError(err?.message ?? 'Không thể tải dữ liệu.'))
-      .finally(() => active && setLoading(false));
+    Promise.resolve(loadSeries()).finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
   }, [device, metricKey, rangeKey, customStart, customEnd]);
+
+  // Realtime: khi có dữ liệu mới cho thiết bị này, tải lại biểu đồ ngay
+  // (không dùng lại được điểm cũ vì việc resample phụ thuộc toàn bộ dữ liệu
+  // thô trong khoảng đã chọn, nên gọi lại API là cách chắc chắn nhất).
+  useEffect(() => {
+    if (!device) return;
+    const unsubscribe = subscribeToDeviceReadings(device.id, () => {
+      loadSeries();
+    });
+    return unsubscribe;
+  }, [device, loadSeries]);
 
   const metric = METRICS.find(m => m.key === metricKey)!;
 

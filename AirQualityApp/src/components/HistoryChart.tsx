@@ -10,6 +10,29 @@ interface HistoryChartProps {
   height?: number;
 }
 
+/** Nối các điểm bằng đường cong mượt (Catmull-Rom chuyển sang Bezier) thay
+ * vì nối thẳng — cho đường biểu đồ uốn lượn tự nhiên hơn qua từng điểm. */
+function smoothLinePath(points: { x: number; y: number }[]): string {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  if (points.length === 2) {
+    return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
+  }
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] ?? p2;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
 const CHART_PADDING = { top: 12, right: 8, bottom: 4, left: 8 };
 
 export function HistoryChart({ data, color, height = 190 }: HistoryChartProps) {
@@ -38,10 +61,9 @@ export function HistoryChart({ data, color, height = 190 }: HistoryChartProps) {
       return { x, y };
     });
 
-    const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+    const line = smoothLinePath(pts);
     const baseline = CHART_PADDING.top + innerH;
-    const area =
-      `${line} L ${pts[pts.length - 1].x} ${baseline} L ${pts[0].x} ${baseline} Z`;
+    const area = `${line} L ${pts[pts.length - 1].x} ${baseline} L ${pts[0].x} ${baseline} Z`;
 
     return {
       linePath: line,

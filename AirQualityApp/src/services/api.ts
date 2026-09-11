@@ -216,10 +216,44 @@ const METRIC_COLUMN: Record<MetricKey, string> = {
   pm25: 'pm25',
 };
 
-/** Số điểm tối đa hiển thị trên biểu đồ — nhiều hơn sẽ được gộp trung bình
- * theo từng khoảng (bucket) để đường biểu đồ mượt, dễ nhìn hơn thay vì gai
- * góc do vẽ hết toàn bộ dữ liệu thô. */
-const MAX_CHART_POINTS = 24;
+/** Luôn resample về đúng số điểm này bằng nội suy — biểu đồ sẽ luôn đủ điểm
+ * để vẽ đường cong mượt, bất kể dữ liệu thô đang thưa hay dày. */
+const CHART_POINT_COUNT = 8;
+
+/** Nội suy tuyến tính: với mỗi mốc thời gian mục tiêu, tìm giá trị dựa trên
+ * 2 điểm dữ liệu thô gần nhất bao quanh nó. Nếu mốc nằm ngoài phạm vi dữ
+ * liệu thô (trước điểm đầu / sau điểm cuối), lấy luôn giá trị gần nhất thay
+ * vì ngoại suy (tránh vẽ ra giá trị vô lý). */
+function resampleToFixedPoints(
+  rows: { t: number; value: number }[],
+  sinceMs: number,
+  untilMs: number,
+  targetCount: number,
+): { t: number; value: number }[] {
+  if (rows.length === 0) return [];
+  const sorted = [...rows].sort((a, b) => a.t - b.t);
+  const result: { t: number; value: number }[] = [];
+  const step = targetCount > 1 ? (untilMs - sinceMs) / (targetCount - 1) : 0;
+
+  for (let i = 0; i < targetCount; i++) {
+    const targetT = sinceMs + step * i;
+    if (targetT <= sorted[0].t) {
+      result.push({ t: targetT, value: sorted[0].value });
+      continue;
+    }
+    if (targetT >= sorted[sorted.length - 1].t) {
+      result.push({ t: targetT, value: sorted[sorted.length - 1].value });
+      continue;
+    }
+    let lo = 0;
+    while (lo < sorted.length - 1 && sorted[lo + 1].t < targetT) lo++;
+    const a = sorted[lo];
+    const b = sorted[lo + 1];
+    const ratio = (targetT - a.t) / (b.t - a.t || 1);
+    result.push({ t: targetT, value: a.value + (b.value - a.value) * ratio });
+  }
+  return result;
+}
 
 export async function getHistorySeries(
   deviceId: string,
@@ -255,38 +289,25 @@ export async function getHistorySeries(
   if (error) throw error;
   if (!data || data.length === 0) return [];
 
-  const rangeMs = Math.max(until.getTime() - since.getTime(), 60000);
-  const bucketMs = Math.max(rangeMs / MAX_CHART_POINTS, 60000); // tối thiểu 1 phút/nhóm
-  const spanDays = rangeMs / 86400000;
+  const rows = (data as any[]).map(row => ({
+    t: new Date(row.recorded_at).getTime(),
+    value: Number(row[column]),
+  }));
+
+  const resampled = resampleToFixedPoints(rows, since.getTime(), until.getTime(), CHART_POINT_COUNT);
+  const spanDays = (until.getTime() - since.getTime()) / 86400000;
   const decimals = metric === 'co' ? 2 : metric === 'temperature' ? 1 : 0;
 
-  // Gộp các điểm rơi vào cùng 1 khoảng (bucket) thành 1 điểm trung bình.
-  const buckets = new Map<number, { sum: number; count: number; ts: number }>();
-  for (const row of data as any[]) {
-    const t = new Date(row.recorded_at).getTime();
-    const idx = Math.floor((t - since.getTime()) / bucketMs);
-    const value = Number(row[column]);
-    const bucket = buckets.get(idx);
-    if (bucket) {
-      bucket.sum += value;
-      bucket.count += 1;
-    } else {
-      buckets.set(idx, { sum: value, count: 1, ts: since.getTime() + idx * bucketMs + bucketMs / 2 });
-    }
-  }
-
-  return Array.from(buckets.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([, b]) => {
-      const d = new Date(b.ts);
-      const label =
-        spanDays <= 1.5
-          ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-          : spanDays <= 4
-            ? `${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} ${d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`
-            : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
-      return { label, value: Number((b.sum / b.count).toFixed(decimals)) };
-    });
+  return resampled.map(p => {
+    const d = new Date(p.t);
+    const label =
+      spanDays <= 1.5
+        ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+        : spanDays <= 4
+          ? `${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} ${d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`
+          : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+    return { label, value: Number(p.value.toFixed(decimals)) };
+  });
 }
 
 /* ------------------------------ Notifications ------------------------------ */
