@@ -5,23 +5,6 @@
 
 namespace SupabasePublisher {
 
-  // Công thức tính AQI từ PM2.5 theo tài liệu FIRMWARE_INTEGRATION.md
-  int calcAqiFromPm25(float pm25) {
-    struct BP { float cLow, cHigh; int aLow, aHigh; };
-    BP table[] = {
-      {0.0, 12.0, 0, 50},
-      {12.1, 35.4, 51, 100},
-      {35.5, 55.4, 101, 150},
-      {55.5, 150.4, 151, 200},
-      {150.5, 350.4, 201, 300},
-    };
-    for (auto &bp : table) {
-      if (pm25 >= bp.cLow && pm25 <= bp.cHigh) {
-        return round((float)(bp.aHigh - bp.aLow) / (bp.cHigh - bp.cLow) * (pm25 - bp.cLow) + bp.aLow);
-      }
-    }
-    return 300; 
-  }
 
   void begin() {
     Serial.print(F("Connecting to WiFi: "));
@@ -51,11 +34,6 @@ namespace SupabasePublisher {
     String pm25_str = (manager.getPM25().state == SensorState::OK) ? String(manager.getPM25().value, 1) : "null";
     String co_str = (manager.getMQ7().state == SensorState::OK) ? String(manager.getMQ7().value, 2) : "null";
     
-    // Tính AQI dựa trên PM2.5 (nếu PM2.5 hợp lệ)
-    String aqi_str = "null";
-    if (manager.getPM25().state == SensorState::OK) {
-      aqi_str = String(calcAqiFromPm25(manager.getPM25().value));
-    }
 
     String body = String("{") +
       "\"p_device_code\":\"" + DEVICE_CODE + "\"," +
@@ -63,8 +41,11 @@ namespace SupabasePublisher {
       "\"p_humidity\":" + h_str + "," +
       "\"p_pm25\":" + pm25_str + "," +
       "\"p_co\":" + co_str + "," +
-      "\"p_aqi\":" + aqi_str +
+      "\"p_aqi\":null" +
     "}";
+
+    Serial.print(F("[Supabase] Payload: "));
+    Serial.println(body);
 
     int code = http.POST(body);
     Serial.printf("[Supabase] submit_reading -> HTTP %d\n", code);
