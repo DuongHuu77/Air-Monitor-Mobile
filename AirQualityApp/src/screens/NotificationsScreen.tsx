@@ -1,12 +1,14 @@
 import React, { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Info } from 'lucide-react-native';
+import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Info, Trash2 } from 'lucide-react-native';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { Screen } from '../components/Screen';
 import { EmptyBlock, LoadingBlock } from '../components/StateBlocks';
 import { colors } from '../theme/colors';
 import {
+  deleteAllNotifications,
+  deleteNotification,
   getNotifications,
   markAllNotificationsRead,
   markNotificationRead,
@@ -54,15 +56,50 @@ export function NotificationsScreen({ navigation }: RootScreenProps<'Notificatio
     }
   }
 
+  async function handleDeleteOne(id: string) {
+    const previous = items;
+    setItems(prev => prev.filter(n => n.id !== id));
+    try {
+      await deleteNotification(id);
+    } catch {
+      setItems(previous);
+    }
+  }
+
+  function confirmDeleteAll() {
+    if (items.length === 0) return;
+    Alert.alert('Xóa tất cả thông báo', 'Toàn bộ thông báo sẽ bị xóa vĩnh viễn. Bạn có chắc chắn?', [
+      { text: 'Hủy', style: 'cancel' },
+      {
+        text: 'Xóa tất cả',
+        style: 'destructive',
+        onPress: async () => {
+          const previous = items;
+          setItems([]);
+          try {
+            await deleteAllNotifications();
+          } catch {
+            setItems(previous);
+          }
+        },
+      },
+    ]);
+  }
+
   return (
     <Screen>
       <ScreenHeader
         title="Thông báo"
         onBack={() => navigation.goBack()}
         right={
-          <TouchableOpacity onPress={handleMarkAll} hitSlop={8}>
-            <CheckCheck size={20} color={colors.primary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={handleMarkAll} hitSlop={8}>
+              <CheckCheck size={20} color={colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={confirmDeleteAll} hitSlop={8}>
+              <Trash2 size={19} color={colors.danger} />
+            </TouchableOpacity>
+          </View>
         }
       />
       {loading ? (
@@ -103,6 +140,13 @@ export function NotificationsScreen({ navigation }: RootScreenProps<'Notificatio
                   <Text style={styles.itemMessage}>{item.message}</Text>
                 </View>
                 {!item.isRead && <View style={styles.dot} />}
+                <TouchableOpacity
+                  onPress={() => handleDeleteOne(item.id)}
+                  hitSlop={8}
+                  style={styles.deleteBtn}
+                >
+                  <Trash2 size={16} color={colors.textTertiary} />
+                </TouchableOpacity>
               </TouchableOpacity>
             );
           }}
@@ -113,6 +157,7 @@ export function NotificationsScreen({ navigation }: RootScreenProps<'Notificatio
 }
 
 const styles = StyleSheet.create({
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   item: {
     flexDirection: 'row',
     gap: 12,
@@ -128,4 +173,5 @@ const styles = StyleSheet.create({
   itemTime: { fontSize: 11, color: colors.textTertiary },
   itemMessage: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.danger, marginTop: 4 },
+  deleteBtn: { paddingLeft: 8, paddingVertical: 2 },
 });
