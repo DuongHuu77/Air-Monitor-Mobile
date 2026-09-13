@@ -48,7 +48,7 @@ export type MetricKey = 'aqi' | 'temperature' | 'humidity' | 'co' | 'pm25';
 
 export interface HistoryPoint {
   label: string;
-  value: number;
+  value: number | null;
 }
 
 export type HistoryRangeKey = 'today' | '3d' | '7d' | 'custom';

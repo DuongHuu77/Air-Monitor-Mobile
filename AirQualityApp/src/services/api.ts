@@ -124,6 +124,9 @@ export async function getLatestReading(deviceId: string): Promise<AirQualityRead
     .from('air_quality_readings')
     .select('id, device_id, recorded_at, temperature, humidity, pm25, co, aqi')
     .eq('device_id', deviceId)
+    // Bỏ qua các dòng thiếu aqi (NULL) — tránh trường hợp Number(null) = 0
+    // khiến "chưa có dữ liệu" bị hiểu nhầm thành "AQI = 0" (tốt nhất).
+    .not('aqi', 'is', null)
     .order('recorded_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -135,10 +138,10 @@ export async function getLatestReading(deviceId: string): Promise<AirQualityRead
     id: data.id,
     deviceId: data.device_id,
     recordedAt: data.recorded_at,
-    temperature: Number(data.temperature),
-    humidity: Number(data.humidity),
-    pm25: Number(data.pm25),
-    co: Number(data.co),
+    temperature: data.temperature === null ? 0 : Number(data.temperature),
+    humidity: data.humidity === null ? 0 : Number(data.humidity),
+    pm25: data.pm25 === null ? 0 : Number(data.pm25),
+    co: data.co === null ? 0 : Number(data.co),
     aqi: Number(data.aqi),
   };
 }
@@ -155,8 +158,13 @@ export function subscribeToDeviceReadings(
   deviceId: string,
   onInsert: (reading: AirQualityReading) => void,
 ): () => void {
+  // Tên kênh phải DUY NHẤT cho mỗi lần gọi — nếu nhiều màn hình (Home,
+  // History...) cùng đăng ký nghe 1 thiết bị mà trùng tên kênh, Supabase sẽ
+  // báo lỗi "cannot add postgres_changes callbacks... after subscribe()"
+  // vì React Navigation giữ các tab khác vẫn mounted ngầm phía sau.
+  const channelName = `device-readings-${deviceId}-${Math.random().toString(36).slice(2)}`;
   const channel = supabase
-    .channel(`device-readings-${deviceId}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
@@ -167,14 +175,17 @@ export function subscribeToDeviceReadings(
       },
       (payload: any) => {
         const row = payload.new;
+        // Dòng mới thiếu aqi (NULL) thì bỏ qua hẳn — không đẩy lên UI, tránh
+        // ghi đè AQI đang hiển thị đúng bằng "0" giả do Number(null).
+        if (row.aqi === null || row.aqi === undefined) return;
         onInsert({
           id: row.id,
           deviceId: row.device_id,
           recordedAt: row.recorded_at,
-          temperature: Number(row.temperature),
-          humidity: Number(row.humidity),
-          pm25: Number(row.pm25),
-          co: Number(row.co),
+          temperature: row.temperature === null ? 0 : Number(row.temperature),
+          humidity: row.humidity === null ? 0 : Number(row.humidity),
+          pm25: row.pm25 === null ? 0 : Number(row.pm25),
+          co: row.co === null ? 0 : Number(row.co),
           aqi: Number(row.aqi),
         });
       },
@@ -208,52 +219,23 @@ export async function getForecast(deviceId: string): Promise<ForecastPoint[]> {
 }
 
 /* --------------------------------- History -------------------------------- */
-const METRIC_COLUMN: Record<MetricKey, string> = {
-  aqi: 'aqi',
-  temperature: 'temperature',
-  humidity: 'humidity',
-  co: 'co',
-  pm25: 'pm25',
-};
-
-/** Luôn resample về đúng số điểm này bằng nội suy — biểu đồ sẽ luôn đủ điểm
- * để vẽ đường cong mượt, bất kể dữ liệu thô đang thưa hay dày. */
+/** Số điểm cố định hiển thị trên biểu đồ. */
 const CHART_POINT_COUNT = 8;
 
-/** Nội suy tuyến tính: với mỗi mốc thời gian mục tiêu, tìm giá trị dựa trên
- * 2 điểm dữ liệu thô gần nhất bao quanh nó. Nếu mốc nằm ngoài phạm vi dữ
- * liệu thô (trước điểm đầu / sau điểm cuối), lấy luôn giá trị gần nhất thay
- * vì ngoại suy (tránh vẽ ra giá trị vô lý). */
-function resampleToFixedPoints(
-  rows: { t: number; value: number }[],
-  sinceMs: number,
-  untilMs: number,
-  targetCount: number,
-): { t: number; value: number }[] {
-  if (rows.length === 0) return [];
-  const sorted = [...rows].sort((a, b) => a.t - b.t);
-  const result: { t: number; value: number }[] = [];
-  const step = targetCount > 1 ? (untilMs - sinceMs) / (targetCount - 1) : 0;
-
-  for (let i = 0; i < targetCount; i++) {
-    const targetT = sinceMs + step * i;
-    if (targetT <= sorted[0].t) {
-      result.push({ t: targetT, value: sorted[0].value });
-      continue;
-    }
-    if (targetT >= sorted[sorted.length - 1].t) {
-      result.push({ t: targetT, value: sorted[sorted.length - 1].value });
-      continue;
-    }
-    let lo = 0;
-    while (lo < sorted.length - 1 && sorted[lo + 1].t < targetT) lo++;
-    const a = sorted[lo];
-    const b = sorted[lo + 1];
-    const ratio = (targetT - a.t) / (b.t - a.t || 1);
-    result.push({ t: targetT, value: a.value + (b.value - a.value) * ratio });
-  }
-  return result;
-}
+const METRIC_AVG_COLUMN: Record<MetricKey, string> = {
+  aqi: 'avg_aqi',
+  temperature: 'avg_temperature',
+  humidity: 'avg_humidity',
+  co: 'avg_co',
+  pm25: 'avg_pm25',
+};
+const METRIC_CNT_COLUMN: Record<MetricKey, string> = {
+  aqi: 'cnt_aqi',
+  temperature: 'cnt_temperature',
+  humidity: 'cnt_humidity',
+  co: 'cnt_co',
+  pm25: 'cnt_pm25',
+};
 
 export async function getHistorySeries(
   deviceId: string,
@@ -261,7 +243,6 @@ export async function getHistorySeries(
   range: HistoryRangeKey,
   customRange?: { start: string; end: string },
 ): Promise<HistoryPoint[]> {
-  const column = METRIC_COLUMN[metric];
   const now = new Date();
   let since: Date;
   let until: Date = now;
@@ -277,36 +258,45 @@ export async function getHistorySeries(
     until = customRange ? new Date(customRange.end + 'T23:59:59') : now;
   }
 
-  const { data, error } = await supabase
-    .from('air_quality_readings')
-    .select(`recorded_at, ${column}`)
-    .eq('device_id', deviceId)
-    .gte('recorded_at', since.toISOString())
-    .lte('recorded_at', until.toISOString())
-    .order('recorded_at', { ascending: true })
-    .limit(5000);
-
-  if (error) throw error;
-  if (!data || data.length === 0) return [];
-
-  const rows = (data as any[]).map(row => ({
-    t: new Date(row.recorded_at).getTime(),
-    value: Number(row[column]),
-  }));
-
-  const resampled = resampleToFixedPoints(rows, since.getTime(), until.getTime(), CHART_POINT_COUNT);
-  const spanDays = (until.getTime() - since.getTime()) / 86400000;
+  const sinceMs = since.getTime();
+  const untilMs = Math.max(until.getTime(), sinceMs + 60000);
+  const bucketMs = (untilMs - sinceMs) / CHART_POINT_COUNT;
   const decimals = metric === 'co' ? 2 : metric === 'temperature' ? 1 : 0;
 
-  return resampled.map(p => {
-    const d = new Date(p.t);
+  // Việc tính trung bình theo từng khoảng thời gian được thực hiện NGAY
+  // TRONG DATABASE (xem supabase/migration_history_buckets.sql), không còn
+  // tải dữ liệu thô về máy rồi mới gộp — tránh giới hạn số dòng tải về khi
+  // thiết bị gửi dữ liệu rất dày (vài giây/lần vẫn tính đúng vì Postgres
+  // gộp trước khi trả kết quả, chỉ trả về tối đa 8 dòng).
+  const { data, error } = await supabase.rpc('get_history_buckets', {
+    p_device_id: deviceId,
+    p_since: since.toISOString(),
+    p_until: until.toISOString(),
+    p_bucket_count: CHART_POINT_COUNT,
+  });
+
+  if (error) throw error;
+
+  const avgCol = METRIC_AVG_COLUMN[metric];
+  const cntCol = METRIC_CNT_COLUMN[metric];
+  const byIndex = new Map<number, any>();
+  for (const row of (data ?? []) as any[]) {
+    byIndex.set(row.bucket_index, row);
+  }
+
+  return Array.from({ length: CHART_POINT_COUNT }, (_, i) => {
+    const bucketCenterMs = sinceMs + bucketMs * (i + 0.5);
+    const d = new Date(bucketCenterMs);
+    // Chỉ hiện giờ:phút cụ thể ở chế độ "Hôm nay"; các chế độ nhiều ngày
+    // (3 ngày / 7 ngày / tùy chọn) chỉ hiện ngày/tháng cho gọn trục X.
     const label =
-      spanDays <= 1.5
+      range === 'today'
         ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-        : spanDays <= 4
-          ? `${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} ${d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`
-          : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
-    return { label, value: Number(p.value.toFixed(decimals)) };
+        : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+    const row = byIndex.get(i);
+    const count = row ? Number(row[cntCol]) : 0;
+    const value = count > 0 ? Number(Number(row[avgCol]).toFixed(decimals)) : null;
+    return { label, value };
   });
 }
 

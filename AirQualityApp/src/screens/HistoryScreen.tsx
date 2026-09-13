@@ -46,50 +46,60 @@ export function HistoryScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Gộp việc lấy thiết bị + tải biểu đồ vào 1 hàm DUY NHẤT, gọi trực tiếp
+  // mỗi khi cần làm mới — không đi qua chuỗi "đổi state thiết bị -> hy vọng
+  // kéo theo tải lại biểu đồ" như bản trước (không đảm bảo chạy đúng lúc).
+  const loadAll = useCallback(async () => {
+    setError(null);
+    try {
+      const devices = await getMyDevices();
+      const activeDevice = devices[0] ?? null;
+      setDevice(activeDevice);
+      if (activeDevice) {
+        const data = await getHistorySeries(activeDevice.id, metricKey, rangeKey, {
+          start: customStart,
+          end: customEnd,
+        });
+        setSeries(data);
+      } else {
+        setSeries([]);
+      }
+    } catch (err: any) {
+      setError(err?.message ?? 'Không thể tải dữ liệu.');
+    }
+  }, [metricKey, rangeKey, customStart, customEnd]);
+
+  // Tải lại MỖI KHI vào/quay lại tab này — đảm bảo luôn thấy dữ liệu mới
+  // nhất, không phụ thuộc việc suy luận qua state trung gian.
   useFocusEffect(
     useCallback(() => {
-      getMyDevices()
-        .then(devices => setDevice(devices[0] ?? null))
-        .catch(err => setError(err?.message ?? 'Không thể tải thiết bị.'));
-    }, []),
+      let active = true;
+      setLoading(true);
+      loadAll().finally(() => active && setLoading(false));
+      return () => {
+        active = false;
+      };
+    }, [loadAll]),
   );
 
-  const loadSeries = useCallback(() => {
-    if (!device) {
-      setLoading(false);
-      return;
-    }
-    setError(null);
-    return getHistorySeries(device.id, metricKey, rangeKey, { start: customStart, end: customEnd })
-      .then(data => setSeries(data))
-      .catch(err => setError(err?.message ?? 'Không thể tải dữ liệu.'));
-  }, [device, metricKey, rangeKey, customStart, customEnd]);
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    Promise.resolve(loadSeries()).finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
-  }, [device, metricKey, rangeKey, customStart, customEnd]);
-
-  // Realtime: khi có dữ liệu mới cho thiết bị này, tải lại biểu đồ ngay
-  // (không dùng lại được điểm cũ vì việc resample phụ thuộc toàn bộ dữ liệu
-  // thô trong khoảng đã chọn, nên gọi lại API là cách chắc chắn nhất).
+  // Realtime: có dữ liệu mới cho thiết bị đang xem thì tải lại ngay, không
+  // cần đợi rời tab rồi quay lại. Dùng device?.id (chuỗi) thay vì cả object
+  // device để tránh việc object đổi tham chiếu mỗi lần fetch làm effect này
+  // bị huỷ/tạo lại kênh Realtime không cần thiết.
   useEffect(() => {
     if (!device) return;
     const unsubscribe = subscribeToDeviceReadings(device.id, () => {
-      loadSeries();
+      loadAll();
     });
     return unsubscribe;
-  }, [device, loadSeries]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [device?.id, loadAll]);
 
   const metric = METRICS.find(m => m.key === metricKey)!;
 
   const stats = useMemo(() => {
-    if (series.length === 0) return { avg: 0, max: 0, min: 0 };
-    const values = series.map(p => p.value);
+    const values = series.map(p => p.value).filter((v): v is number => v !== null);
+    if (values.length === 0) return { avg: 0, max: 0, min: 0 };
     const avg = values.reduce((a, b) => a + b, 0) / values.length;
     const decimals = metricKey === 'co' ? 2 : metricKey === 'temperature' ? 1 : 0;
     return {
@@ -158,15 +168,16 @@ export function HistoryScreen() {
 
       <View style={styles.chartCard}>
         {!device ? (
-          <EmptyBlock title="Chưa có thiết bị" description="Thêm thiết bị trong Supabase để xem lịch sử." />
+          <EmptyBlock title="Chưa có thiết bị" description="Thêm thiết bị trong Supabase để xem lịch sử." height={240} />
         ) : loading ? (
-          <LoadingBlock />
+          <LoadingBlock height={240} />
         ) : error ? (
-          <EmptyBlock title="Có lỗi xảy ra" description={error} />
-        ) : series.length === 0 ? (
+          <EmptyBlock title="Có lỗi xảy ra" description={error} height={240} />
+        ) : series.every(p => p.value === null) ? (
           <EmptyBlock
             title="Chưa có dữ liệu"
             description="Thiết bị chưa ghi nhận dữ liệu trong khoảng thời gian này."
+            height={240}
           />
         ) : (
           <HistoryChart data={series} color={metric.color} />
@@ -220,7 +231,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 16,
     marginBottom: 16,
-    minHeight: 190,
+    minHeight: 240,
     justifyContent: 'center',
   },
   statsRow: { flexDirection: 'row', gap: 12 },

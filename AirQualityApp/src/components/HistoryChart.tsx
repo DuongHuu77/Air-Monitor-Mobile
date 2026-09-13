@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Stop, Circle, Line as SvgLine } from 'react-native-svg';
 import { colors } from '../theme/colors';
@@ -10,9 +10,11 @@ interface HistoryChartProps {
   height?: number;
 }
 
+type Point = { x: number; y: number };
+
 /** Nối các điểm bằng đường cong mượt (Catmull-Rom chuyển sang Bezier) thay
  * vì nối thẳng — cho đường biểu đồ uốn lượn tự nhiên hơn qua từng điểm. */
-function smoothLinePath(points: { x: number; y: number }[]): string {
+function smoothLinePath(points: Point[]): string {
   if (points.length === 0) return '';
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
   if (points.length === 2) {
@@ -33,92 +35,154 @@ function smoothLinePath(points: { x: number; y: number }[]): string {
   return d;
 }
 
-const CHART_PADDING = { top: 12, right: 8, bottom: 4, left: 8 };
+const Y_AXIS_WIDTH = 34;
+const CHART_PADDING = { top: 18, right: 16, bottom: 8, left: 6 };
 
-export function HistoryChart({ data, color, height = 190 }: HistoryChartProps) {
-  const [width, setWidth] = React.useState(0);
+export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
+  const [width, setWidth] = useState(0);
 
   function onLayout(e: LayoutChangeEvent) {
     setWidth(e.nativeEvent.layout.width);
   }
 
-  const { linePath, areaPath, points, minLabel, maxLabel } = useMemo(() => {
-    if (!width || data.length === 0) {
-      return { linePath: '', areaPath: '', points: [] as { x: number; y: number }[], minLabel: '', maxLabel: '' };
-    }
-    const values = data.map(d => d.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+  const { segments, dots, minLabel, maxLabel, baseline, sameValue } = useMemo(() => {
+    const empty = {
+      segments: [] as Point[][],
+      dots: [] as Point[],
+      minLabel: '',
+      maxLabel: '',
+      baseline: 0,
+      sameValue: false,
+    };
+    if (!width || data.length === 0) return empty;
+
+    const validValues = data
+      .map(d => d.value)
+      .filter((v): v is number => v !== null && v !== undefined);
+    if (validValues.length === 0) return empty;
+
+    const rawMin = Math.min(...validValues);
+    const rawMax = Math.max(...validValues);
+    const rawSpan = rawMax - rawMin;
+
+    // Khi dữ liệu gần như không đổi (span ~ 0), tự tạo khoảng đệm xung quanh
+    // giá trị đó để đường line nằm GIỮA biểu đồ thay vì bị dồn về đáy (chia
+    // cho span=0 trước đây khiến mọi điểm quy về cùng 1 vị trí).
+    // Khi dữ liệu có biến động thật, vẫn thêm 25% đệm trên/dưới để đường
+    // line không chạm sát viền, tránh bị cắt/che ở mép trên hoặc dưới.
+    const padding =
+      rawSpan > 0.0001 ? rawSpan * 0.25 : Math.max(Math.abs(rawMax) * 0.15, 0.5);
+    const min = rawMin - padding;
+    const max = rawMax + padding;
     const span = max - min || 1;
 
     const innerW = width - CHART_PADDING.left - CHART_PADDING.right;
     const innerH = height - CHART_PADDING.top - CHART_PADDING.bottom;
+    const baselineY = CHART_PADDING.top + innerH;
 
-    const pts = data.map((d, i) => {
+    const rawPoints: (Point | null)[] = data.map((d, i) => {
       const x =
         CHART_PADDING.left + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW);
+      if (d.value === null || d.value === undefined) return null;
       const y = CHART_PADDING.top + innerH - ((d.value - min) / span) * innerH;
       return { x, y };
     });
 
-    const line = smoothLinePath(pts);
-    const baseline = CHART_PADDING.top + innerH;
-    const area = `${line} L ${pts[pts.length - 1].x} ${baseline} L ${pts[0].x} ${baseline} Z`;
+    const segs: Point[][] = [];
+    let current: Point[] = [];
+    for (const p of rawPoints) {
+      if (p === null) {
+        if (current.length > 0) {
+          segs.push(current);
+          current = [];
+        }
+      } else {
+        current.push(p);
+      }
+    }
+    if (current.length > 0) segs.push(current);
 
     return {
-      linePath: line,
-      areaPath: area,
-      points: pts,
-      minLabel: formatValue(min),
-      maxLabel: formatValue(max),
+      segments: segs,
+      dots: rawPoints.filter((p): p is Point => p !== null),
+      minLabel: formatValue(rawMin),
+      maxLabel: formatValue(rawMax),
+      baseline: baselineY,
+      sameValue: rawSpan <= 0.0001,
     };
   }, [data, width, height]);
 
   const labelIndices = useMemo(() => pickLabelIndices(data.length), [data.length]);
+  const hasAnyData = dots.length > 0;
+  const lastDot = dots[dots.length - 1];
 
   return (
     <View>
-      <View style={{ height }} onLayout={onLayout}>
-        {width > 0 && data.length > 0 && (
-          <Svg width={width} height={height}>
-            <Defs>
-              <LinearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0%" stopColor={color} stopOpacity={0.28} />
-                <Stop offset="100%" stopColor={color} stopOpacity={0} />
-              </LinearGradient>
-            </Defs>
-            <SvgLine
-              x1={CHART_PADDING.left}
-              x2={width - CHART_PADDING.right}
-              y1={height - CHART_PADDING.bottom}
-              y2={height - CHART_PADDING.bottom}
-              stroke={colors.border}
-              strokeWidth={1}
-            />
-            <Path d={areaPath} fill="url(#areaFill)" />
-            <Path d={linePath} stroke={color} strokeWidth={2.5} fill="none" />
-            {points.map((p, i) => (
-              <Circle
-                key={i}
-                cx={p.x}
-                cy={p.y}
-                r={i === points.length - 1 ? 4 : 2.5}
-                fill="#fff"
-                stroke={color}
-                strokeWidth={2}
-              />
-            ))}
-          </Svg>
-        )}
-        {width > 0 && data.length > 0 && (
-          <View style={styles.yLabels} pointerEvents="none">
-            <Text style={styles.axisLabel}>{maxLabel}</Text>
-            <Text style={styles.axisLabel}>{minLabel}</Text>
+      <View style={{ height, flexDirection: 'row' }}>
+        {hasAnyData && (
+          <View style={styles.yAxisColumn}>
+            {sameValue ? (
+              <Text style={[styles.axisLabel, styles.yLabelCentered]}>{maxLabel}</Text>
+            ) : (
+              <>
+                <Text style={styles.axisLabel}>{maxLabel}</Text>
+                <Text style={styles.axisLabel}>{minLabel}</Text>
+              </>
+            )}
           </View>
         )}
+        <View style={{ flex: 1 }} onLayout={onLayout}>
+          {width > 0 && hasAnyData && (
+            <Svg width={width} height={height}>
+              <Defs>
+                <LinearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+                  <Stop offset="0%" stopColor={color} stopOpacity={0.28} />
+                  <Stop offset="100%" stopColor={color} stopOpacity={0} />
+                </LinearGradient>
+              </Defs>
+              <SvgLine
+                x1={CHART_PADDING.left}
+                x2={width - CHART_PADDING.right}
+                y1={baseline}
+                y2={baseline}
+                stroke={colors.border}
+                strokeWidth={1}
+              />
+              {segments.map((seg, i) => {
+                const line = smoothLinePath(seg);
+                const area =
+                  seg.length > 1
+                    ? `${line} L ${seg[seg.length - 1].x} ${baseline} L ${seg[0].x} ${baseline} Z`
+                    : '';
+                return (
+                  <React.Fragment key={i}>
+                    {area ? <Path d={area} fill="url(#areaFill)" /> : null}
+                    <Path d={line} stroke={color} strokeWidth={2.5} fill="none" />
+                  </React.Fragment>
+                );
+              })}
+              {dots.map((p, i) => (
+                <Circle
+                  key={i}
+                  cx={p.x}
+                  cy={p.y}
+                  r={p === lastDot ? 4 : 2.5}
+                  fill="#fff"
+                  stroke={color}
+                  strokeWidth={2}
+                />
+              ))}
+            </Svg>
+          )}
+          {!hasAnyData && width > 0 && (
+            <View style={styles.noDataBox} pointerEvents="none">
+              <Text style={styles.noDataText}>Không có dữ liệu trong khoảng này</Text>
+            </View>
+          )}
+        </View>
       </View>
       {data.length > 0 && (
-        <View style={styles.xLabels}>
+        <View style={[styles.xLabels, { paddingLeft: Y_AXIS_WIDTH + CHART_PADDING.left }]}>
           {labelIndices.map(i => (
             <Text key={i} style={styles.axisLabel}>
               {data[i]?.label}
@@ -147,21 +211,33 @@ function pickLabelIndices(length: number): number[] {
 }
 
 const styles = StyleSheet.create({
-  yLabels: {
-    position: 'absolute',
-    left: 0,
-    top: CHART_PADDING.top - 6,
-    bottom: CHART_PADDING.bottom,
+  yAxisColumn: {
+    width: Y_AXIS_WIDTH,
+    paddingTop: CHART_PADDING.top - 4,
+    paddingBottom: CHART_PADDING.bottom,
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  yLabelCentered: {
+    flex: 1,
+    textAlignVertical: 'center',
   },
   xLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: 6,
-    paddingHorizontal: CHART_PADDING.left,
   },
   axisLabel: {
     fontSize: 10,
     color: colors.textSecondary,
+  },
+  noDataBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noDataText: {
+    fontSize: 12,
+    color: colors.textTertiary,
   },
 });
