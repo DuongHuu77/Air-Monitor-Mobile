@@ -1,0 +1,32 @@
+AirQualityApp/src/lib/supabase.ts
+
+# Node / Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Android build & cache (Cực kỳ quan trọng để tránh lỗi đường dẫn và nặng repo)
+android/.gradle/
+android/app/build/
+android/build/
+android/app/.cxx/
+android/.idea/
+android/*.iml
+android/app/*.iml
+android/local.properties
+
+# Android Keystore / Secrets (Bảo mật - Tuyệt đối không push)
+*.keystore
+*.jks
+android/app/release.keystore
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Editor & OS
+.vscode/
+.DS_Store
+Thumbs.db
