@@ -285,8 +285,11 @@ export async function getHistorySeries(
   }
 
   return Array.from({ length: CHART_POINT_COUNT }, (_, i) => {
-    const bucketCenterMs = sinceMs + bucketMs * (i + 0.5);
-    const d = new Date(bucketCenterMs);
+    // Dùng mốc KẾT THÚC của mỗi khoảng thay vì điểm giữa — nhờ vậy nhãn của
+    // điểm cuối cùng sẽ luôn trùng đúng thời điểm "bây giờ" (until), thay vì
+    // luôn sớm hơn nửa khoảng như trước.
+    const bucketEndMs = sinceMs + bucketMs * (i + 1);
+    const d = new Date(bucketEndMs);
     // Chỉ hiện giờ:phút cụ thể ở chế độ "Hôm nay"; các chế độ nhiều ngày
     // (3 ngày / 7 ngày / tùy chọn) chỉ hiện ngày/tháng cho gọn trục X.
     const label =
@@ -440,5 +443,42 @@ export async function saveNotificationSettings(settings: NotificationSettings): 
     forecast_alert: settings.forecastAlert,
     improvement_alert: settings.improvementAlert,
   });
+  if (error) throw error;
+}
+
+/* ----------------------------- Saved locations ----------------------------- */
+export interface SavedLocationRow {
+  id: string;
+  query: string;
+  displayName: string | null;
+}
+
+export async function getSavedLocations(): Promise<SavedLocationRow[]> {
+  const { data, error } = await supabase
+    .from('saved_locations')
+    .select('id, query, display_name')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map(row => ({
+    id: row.id,
+    query: row.query,
+    displayName: row.display_name,
+  }));
+}
+
+export async function addSavedLocation(query: string, displayName?: string): Promise<SavedLocationRow> {
+  const userId = await getUserId();
+  if (!userId) throw new Error('Chưa đăng nhập.');
+  const { data, error } = await supabase
+    .from('saved_locations')
+    .insert({ user_id: userId, query: query.trim(), display_name: displayName ?? null })
+    .select('id, query, display_name')
+    .single();
+  if (error) throw error;
+  return { id: data.id, query: data.query, displayName: data.display_name };
+}
+
+export async function deleteSavedLocation(id: string): Promise<void> {
+  const { error } = await supabase.from('saved_locations').delete().eq('id', id);
   if (error) throw error;
 }

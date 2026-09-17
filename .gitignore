@@ -1,4 +1,5 @@
 AirQualityApp/src/lib/supabase.ts
+AirQualityApp/src/lib/waqi.ts
 
 # Node / Dependencies
 node_modules/
