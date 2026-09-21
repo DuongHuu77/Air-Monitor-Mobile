@@ -1,6 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
-import Svg, { Defs, LinearGradient, Path, Stop, Circle, Line as SvgLine } from 'react-native-svg';
+import Svg, {
+  Defs,
+  LinearGradient,
+  Path,
+  Stop,
+  Circle,
+  Line as SvgLine,
+  Text as SvgText,
+} from 'react-native-svg';
 import { colors } from '../theme/colors';
 import { HistoryPoint } from '../types';
 
@@ -10,7 +18,7 @@ interface HistoryChartProps {
   height?: number;
 }
 
-type Point = { x: number; y: number };
+type Point = { x: number; y: number; value: number };
 
 /** Nối các điểm bằng đường cong mượt (Catmull-Rom chuyển sang Bezier) thay
  * vì nối thẳng — cho đường biểu đồ uốn lượn tự nhiên hơn qua từng điểm. */
@@ -35,8 +43,10 @@ function smoothLinePath(points: Point[]): string {
   return d;
 }
 
-const Y_AXIS_WIDTH = 34;
-const CHART_PADDING = { top: 18, right: 16, bottom: 8, left: 6 };
+const Y_AXIS_WIDTH = 38;
+const Y_TICK_COUNT = 5;
+// top tăng lên để chừa chỗ cho nhãn giá trị phía trên mỗi điểm, không bị cắt
+const CHART_PADDING = { top: 26, right: 16, bottom: 8, left: 10 };
 
 export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
   const [width, setWidth] = useState(0);
@@ -45,14 +55,13 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
     setWidth(e.nativeEvent.layout.width);
   }
 
-  const { segments, dots, minLabel, maxLabel, baseline, sameValue } = useMemo(() => {
+  const { segments, dots, yTicks, baseline, innerW } = useMemo(() => {
     const empty = {
       segments: [] as Point[][],
       dots: [] as Point[],
-      minLabel: '',
-      maxLabel: '',
+      yTicks: [] as { value: number; y: number }[],
       baseline: 0,
-      sameValue: false,
+      innerW: 0,
     };
     if (!width || data.length === 0) return empty;
 
@@ -66,26 +75,29 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
     const rawSpan = rawMax - rawMin;
 
     // Khi dữ liệu gần như không đổi (span ~ 0), tự tạo khoảng đệm xung quanh
-    // giá trị đó để đường line nằm GIỮA biểu đồ thay vì bị dồn về đáy (chia
-    // cho span=0 trước đây khiến mọi điểm quy về cùng 1 vị trí).
+    // giá trị đó để đường line nằm GIỮA biểu đồ thay vì bị dồn về đáy.
     // Khi dữ liệu có biến động thật, vẫn thêm 25% đệm trên/dưới để đường
-    // line không chạm sát viền, tránh bị cắt/che ở mép trên hoặc dưới.
+    // line và nhãn giá trị phía trên không chạm sát viền.
     const padding =
       rawSpan > 0.0001 ? rawSpan * 0.25 : Math.max(Math.abs(rawMax) * 0.15, 0.5);
     const min = rawMin - padding;
     const max = rawMax + padding;
     const span = max - min || 1;
 
-    const innerW = width - CHART_PADDING.left - CHART_PADDING.right;
+    const chartInnerW = width - CHART_PADDING.left - CHART_PADDING.right;
     const innerH = height - CHART_PADDING.top - CHART_PADDING.bottom;
     const baselineY = CHART_PADDING.top + innerH;
 
+    function valueToY(v: number) {
+      return CHART_PADDING.top + innerH - ((v - min) / span) * innerH;
+    }
+
     const rawPoints: (Point | null)[] = data.map((d, i) => {
       const x =
-        CHART_PADDING.left + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW);
+        CHART_PADDING.left +
+        (data.length === 1 ? chartInnerW / 2 : (i / (data.length - 1)) * chartInnerW);
       if (d.value === null || d.value === undefined) return null;
-      const y = CHART_PADDING.top + innerH - ((d.value - min) / span) * innerH;
-      return { x, y };
+      return { x, y: valueToY(d.value), value: d.value };
     });
 
     const segs: Point[][] = [];
@@ -102,17 +114,22 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
     }
     if (current.length > 0) segs.push(current);
 
+    // 5 vạch chia đều từ max (trên cùng) xuống min (dưới cùng) để người dùng
+    // dễ ước lượng giá trị theo chiều cao, thay vì chỉ có 2 mốc cao/thấp.
+    const ticks = Array.from({ length: Y_TICK_COUNT }, (_, i) => {
+      const value = max - (i / (Y_TICK_COUNT - 1)) * span;
+      return { value, y: valueToY(value) };
+    });
+
     return {
       segments: segs,
       dots: rawPoints.filter((p): p is Point => p !== null),
-      minLabel: formatValue(rawMin),
-      maxLabel: formatValue(rawMax),
+      yTicks: ticks,
       baseline: baselineY,
-      sameValue: rawSpan <= 0.0001,
+      innerW: chartInnerW,
     };
   }, [data, width, height]);
 
-  const labelIndices = useMemo(() => pickLabelIndices(data.length), [data.length]);
   const hasAnyData = dots.length > 0;
   const lastDot = dots[dots.length - 1];
 
@@ -121,14 +138,14 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
       <View style={{ height, flexDirection: 'row' }}>
         {hasAnyData && (
           <View style={styles.yAxisColumn}>
-            {sameValue ? (
-              <Text style={[styles.axisLabel, styles.yLabelCentered]}>{maxLabel}</Text>
-            ) : (
-              <>
-                <Text style={styles.axisLabel}>{maxLabel}</Text>
-                <Text style={styles.axisLabel}>{minLabel}</Text>
-              </>
-            )}
+            {yTicks.map((t, i) => (
+              <Text
+                key={i}
+                style={[styles.axisLabel, { position: 'absolute', top: t.y - 7, right: 6 }]}
+              >
+                {formatValue(t.value)}
+              </Text>
+            ))}
           </View>
         )}
         <View style={{ flex: 1 }} onLayout={onLayout}>
@@ -140,14 +157,17 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
                   <Stop offset="100%" stopColor={color} stopOpacity={0} />
                 </LinearGradient>
               </Defs>
-              <SvgLine
-                x1={CHART_PADDING.left}
-                x2={width - CHART_PADDING.right}
-                y1={baseline}
-                y2={baseline}
-                stroke={colors.border}
-                strokeWidth={1}
-              />
+              {yTicks.map((t, i) => (
+                <SvgLine
+                  key={i}
+                  x1={CHART_PADDING.left}
+                  x2={width - CHART_PADDING.right}
+                  y1={t.y}
+                  y2={t.y}
+                  stroke={colors.border}
+                  strokeWidth={1}
+                />
+              ))}
               {segments.map((seg, i) => {
                 const line = smoothLinePath(seg);
                 const area =
@@ -172,6 +192,18 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
                   strokeWidth={2}
                 />
               ))}
+              {dots.map((p, i) => (
+                <SvgText
+                  key={`v-${i}`}
+                  x={p.x}
+                  y={Math.max(10, p.y - 10)}
+                  fontSize={9}
+                  fill={colors.textSecondary}
+                  textAnchor="middle"
+                >
+                  {formatValue(p.value)}
+                </SvgText>
+              ))}
             </Svg>
           )}
           {!hasAnyData && width > 0 && (
@@ -183,9 +215,9 @@ export function HistoryChart({ data, color, height = 240 }: HistoryChartProps) {
       </View>
       {data.length > 0 && (
         <View style={[styles.xLabels, { paddingLeft: Y_AXIS_WIDTH + CHART_PADDING.left }]}>
-          {labelIndices.map(i => (
-            <Text key={i} style={styles.axisLabel}>
-              {data[i]?.label}
+          {data.map((d, i) => (
+            <Text key={i} style={styles.xAxisLabel} numberOfLines={1}>
+              {d.label}
             </Text>
           ))}
         </View>
@@ -198,38 +230,23 @@ function formatValue(v: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
-/** Chọn tối đa 6 vị trí nhãn trục X trải đều để tránh chữ chồng lên nhau. */
-function pickLabelIndices(length: number): number[] {
-  if (length <= 1) return length === 1 ? [0] : [];
-  const maxLabels = Math.min(6, length);
-  const step = (length - 1) / (maxLabels - 1);
-  const result: number[] = [];
-  for (let i = 0; i < maxLabels; i++) {
-    result.push(Math.round(i * step));
-  }
-  return Array.from(new Set(result));
-}
-
 const styles = StyleSheet.create({
   yAxisColumn: {
     width: Y_AXIS_WIDTH,
-    paddingTop: CHART_PADDING.top - 4,
-    paddingBottom: CHART_PADDING.bottom,
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  yLabelCentered: {
-    flex: 1,
-    textAlignVertical: 'center',
   },
   xLabels: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     marginTop: 6,
   },
   axisLabel: {
     fontSize: 10,
     color: colors.textSecondary,
+  },
+  xAxisLabel: {
+    flex: 1,
+    fontSize: 9,
+    color: colors.textSecondary,
+    textAlign: 'center',
   },
   noDataBox: {
     flex: 1,
